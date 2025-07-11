@@ -1,7 +1,7 @@
 # ===== 1. 读取小说文本 =====
 from sentence_transformers import SentenceTransformer
 
-with open("斗破苍穹1-500.txt", "r", encoding="utf-8") as f:
+with open("../workspace/斗破苍穹1-500.txt", "r", encoding="utf-8") as f:
     raw_text = f.read()
 
 # ===== 2. 清洗 =====
