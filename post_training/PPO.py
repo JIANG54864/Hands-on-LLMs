@@ -161,6 +161,14 @@ class RewardModel(nn.Module):
         reward = self.reward_head(last_hidden_state)
         return reward
 
+    def compute_reward(self, input_ids, attention_mask=None):
+        """
+        计算文本序列的奖励值
+        """
+        with torch.no_grad():
+            reward = self.forward(input_ids, attention_mask)
+        return reward.squeeze(-1) if reward.dim() > 1 else reward
+
 
 # 3. 策略模型（基于预训练语言模型）
 class PolicyModel(nn.Module):
@@ -243,6 +251,7 @@ class PPO:
         self.reward_model.to(device)
 
         self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
+        self.reward_optimizer = optim.Adam(self.reward_model.parameters(), lr=lr*0.1)  # 奖励模型学习率更低
         self.losses = []  # 添加用于记录loss的列表
 
     def compute_advantages(self, rewards, values, dones, next_values):
@@ -284,10 +293,6 @@ class PPO:
         next_states = torch.tensor(next_states, dtype=torch.long).to(device)
         dones = torch.tensor(dones, dtype=torch.float).to(device)
 
-        # 计算奖励（使用奖励模型）
-        with torch.no_grad():
-            reward_values = self.reward_model(states, attention_masks).squeeze()
-
         # 多轮更新
         epoch_losses = []  # 记录每个epoch的loss
         for _ in range(epochs):
@@ -307,11 +312,6 @@ class PPO:
             batch_size = states.shape[0]
 
             # 确保所有值都是一维数组
-            if reward_values.dim() == 0:  # 标量
-                rewards_np = reward_values.cpu().numpy().repeat(batch_size)
-            else:
-                rewards_np = reward_values.cpu().numpy()
-
             if values.dim() == 0:  # 标量
                 values_np = values.cpu().numpy().repeat(batch_size)
             else:
@@ -328,8 +328,6 @@ class PPO:
                 dones_np = dones.cpu().numpy()
 
             # 如果数组形状不正确，需要调整
-            if rewards_np.ndim == 0:
-                rewards_np = np.full(batch_size, rewards_np.item())
             if values_np.ndim == 0:
                 values_np = np.full(batch_size, values_np.item())
             if next_values_np.ndim == 0:
@@ -337,7 +335,9 @@ class PPO:
             if dones_np.ndim == 0:
                 dones_np = np.full(batch_size, dones_np.item())
 
-            advantages = self.compute_advantages(rewards_np, values_np, dones_np, next_values_np)
+            # 使用奖励作为优势的简化版本（替代复杂的GAE计算）
+            advantages = rewards.cpu().numpy() - values_np
+            
             advantages = torch.tensor(advantages, dtype=torch.float).to(device)
 
             # 计算旧策略的概率（用于比率计算）
@@ -399,8 +399,31 @@ def collect_human_feedback(prompts, responses):
         rewards.append(score)
     return np.array(rewards)
 
+# 7. 奖励模型训练函数
+def train_reward_model(reward_model, reward_optimizer, texts, human_rewards, tokenizer, device):
+    reward_model.train()
+    
+    # 编码文本
+    encodings = tokenizer(texts, return_tensors='pt', padding=True, truncation=True)
+    input_ids = encodings['input_ids'].to(device)
+    attention_mask = encodings['attention_mask'].to(device)
+    human_rewards = torch.tensor(human_rewards, dtype=torch.float32).to(device)
+    
+    # 计算模型预测的奖励
+    predicted_rewards = reward_model(input_ids, attention_mask=attention_mask).squeeze()
+    
+    # 计算损失（均方误差）
+    loss = nn.MSELoss()(predicted_rewards, human_rewards)
+    
+    # 更新奖励模型
+    reward_optimizer.zero_grad()
+    loss.backward()
+    reward_optimizer.step()
+    
+    reward_model.eval()
+    return loss.item()
 
-# 7. 主训练循环
+# 8. 主训练循环
 def main():
     os.environ['MODELSCOPE_CACHE'] = "../model_cache"
     os.environ['HF_HOME'] = "../model_cache"
@@ -425,8 +448,8 @@ def main():
     replay_buffer = ReplayBuffer(10000)
 
     # 训练参数
-    num_episodes = 100
-    batch_size = 1
+    num_episodes = 500
+    batch_size = 32  # 增加批量大小以提高训练稳定性
     reward_update_interval = 10
 
     # 记录训练过程中的奖励和loss
@@ -465,7 +488,7 @@ def main():
             replay_buffer.push(states[i], actions[i], rewards[i], next_states[i], dones[i])
 
         # 定期更新奖励模型
-        if episode % reward_update_interval == 0 and len(replay_buffer) > batch_size:
+        if episode % reward_update_interval == 0 and len(replay_buffer) >= batch_size:
             # 采样一批数据
             batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones = replay_buffer.sample(
                 batch_size)
@@ -483,11 +506,12 @@ def main():
             # 收集人类反馈（模拟）
             human_rewards = collect_human_feedback([""] * batch_size, responses)
 
-            # 更新奖励模型
-            # 这里简化处理，实际应用中需要训练奖励模型
-            print(f"Collected human feedback with average reward: {human_rewards.mean():.3f}")
+            # 训练奖励模型
+            reward_loss = train_reward_model(reward_model, ppo.reward_optimizer, responses, human_rewards, tokenizer, device)
+            print(f"Episode {episode}, Reward Model Loss: {reward_loss:.4f}")
+
         # 更新策略
-        if len(replay_buffer) > batch_size:
+        if len(replay_buffer) >= batch_size:
             batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones = replay_buffer.sample(
                     batch_size)
             losses = ppo.update(batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones)
@@ -501,7 +525,7 @@ def main():
             print(f"Sample text: {env.current_text}")
 
         # 定期评估策略
-        if episode % 50 == 0:
+        if episode % 50 == 0 and episode > 0:
             print("Evaluating current policy...")
             eval_rewards = []
             for _ in range(5):  # 运行5个评估episode
@@ -509,7 +533,7 @@ def main():
                 done = False
                 total_eval_reward = 0
                 while not done:
-                    action = policy_model.get_action(torch.tensor(state, dtype=torch.long), sample=True)  # 改为采样模式
+                    action = policy_model.get_action(torch.tensor(state, dtype=torch.long), sample=False)  # 评估时使用贪婪策略
                     next_state, reward, done, _ = env.step(action)
                     state = next_state
                     total_eval_reward += reward
@@ -528,7 +552,8 @@ def main():
     
     # 绘制loss曲线
     plt.subplot(1, 2, 2)
-    plt.plot(all_losses)
+    if all_losses:  # 只有在有loss数据时才绘制
+        plt.plot(all_losses)
     plt.title('Training Loss')
     plt.xlabel('Update Step')
     plt.ylabel('Policy Loss')
