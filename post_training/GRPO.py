@@ -1,0 +1,204 @@
+# Warning control
+import warnings
+warnings.filterwarnings('ignore')
+
+
+import torch
+from datasets import load_dataset
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from trl import GRPOConfig, GRPOTrainer
+from transformers import TrainerCallback
+import matplotlib.pyplot as plt
+import re
+
+# 用于记录训练loss的回调函数
+class LossLoggingCallback(TrainerCallback):
+    def __init__(self):
+        self.losses = []
+        self.steps = []
+        self.rewards = []
+    
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs and "loss" in logs:
+            self.losses.append(logs["loss"])
+            self.steps.append(state.global_step)
+            print(f"Step {state.global_step}: Loss = {logs['loss']:.4f}")
+        
+        # 打印生成的文本示例，帮助调试
+        if logs and "rewards" in logs:
+            self.rewards.extend(logs["rewards"])
+            avg_reward = sum(logs["rewards"]) / len(logs["rewards"])
+            print(f"Step {state.global_step}: Average Reward = {avg_reward:.4f}")
+            
+            # 如果有生成的文本示例，也打印出来帮助调试
+            if "responses" in logs:
+                print(f"Step {state.global_step}: Sample responses = {logs['responses'][:2]}...")
+
+# 1. 加载模型和分词器
+model_name = "Qwen/Qwen3-0.6B"  # 请根据实际模型名称调整
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, cache_dir="../model_cache")
+model = AutoModelForCausalLM.from_pretrained(model_name, trust_remote_code=True,
+                                                            cache_dir="../model_cache")
+
+# 如果分词器没有pad_token，设置一个
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+# 2. 加载并预处理GSM8K数据集
+dataset = load_dataset("openai/gsm8k", "main")  # 使用OpenAI的GSM8K数据集:cite[2]
+# 假设我们使用训练集
+train_dataset = dataset["train"]
+
+
+# 定义一个函数来格式化数据，适配模型的聊天模板
+def format_dataset(example):
+    # 根据Qwen3的聊天模板格式化数据:cite[8]
+    # 例如: [{"role": "user", "content": "问题..."}]
+    # 具体格式请参考Qwen3的官方文档
+    formatted_prompt = tokenizer.apply_chat_template(
+        [{"role": "user", "content": example["question"]}],
+        tokenize=False,
+        add_generation_prompt=True
+    )
+    return {"prompt": formatted_prompt, "answer": example["answer"]}
+
+
+# 应用格式化函数
+train_dataset = train_dataset.map(format_dataset)
+
+
+# 3. 定义奖励函数
+# 奖励函数是GRPO的核心，用于评估生成内容的质量:cite[9]
+def math_reasoning_reward(completions, prompts=None, **kwargs):
+    """
+    根据数学推理的正确性和格式给予奖励。
+    由于GSM8K的答案有固定格式（以####结尾），可以据此判断正误:cite[2]
+    """
+    rewards = []
+    
+    # 获取标准答案（如果提供了prompts）
+    answers = None
+    if prompts and "answer" in prompts[0]:
+        answers = [prompt["answer"] for prompt in prompts]
+    
+    for i, completion in enumerate(completions):
+        reward = 0.0
+
+        # 奖励1: 鼓励生成包含推理步骤的文本
+        # 可以根据实际需求调整判断逻辑
+        if "think" in completion.lower() or "step" in completion.lower():
+            reward += 0.3
+
+        # 奖励2: 检查答案格式（GSM8K答案通常以####数字结尾）
+        if "####" in completion:
+            reward += 0.7
+            
+        # 奖励3: 鼓励更长的生成文本
+        reward += min(len(completion) / 1000, 0.5)  # 长度奖励，最多0.5
+        
+        # 奖励4: 检查是否包含数字（数学问题应该有数字）
+        if re.search(r'\d', completion):
+            reward += 0.2
+            
+        # 更精确的奖励：尝试提取答案并比较
+        if answers is not None:
+            # 提取模型生成的答案
+            model_answer_match = re.search(r'####\s*(.*)', completion)
+            # 提取标准答案
+            ground_truth_match = re.search(r'####\s*(.*)', answers[i])
+            
+            if model_answer_match and ground_truth_match:
+                try:
+                    model_answer = float(model_answer_match.group(1).strip())
+                    ground_truth = float(ground_truth_match.group(1).strip())
+                    
+                    # 如果答案正确，给予高奖励
+                    if abs(model_answer - ground_truth) < 1e-6:
+                        reward += 2.0
+                    # 如果答案接近，给予部分奖励
+                    elif abs(model_answer - ground_truth) < 0.1 * abs(ground_truth):
+                        reward += 1.0
+                except ValueError:
+                    # 如果无法转换为数字，给予较小的奖励
+                    reward += 0.1
+
+        rewards.append(reward)
+
+    return rewards
+
+
+# 4. 配置训练参数
+training_args = GRPOConfig(
+    output_dir="./qwen3-0.6b-grpo-gsm8k",
+    # 批次大小相关参数，适用于24GB显存的RTX 3090
+    per_device_train_batch_size=8,  # 增加批次大小以更好地利用显存
+    gradient_accumulation_steps=1,  # 减少梯度累积步数
+    num_generations=4,  # 每个提示生成的样本数
+
+    # 学习率与优化器
+    learning_rate=5e-6,  # 降低学习率以提高训练稳定性
+    max_grad_norm=0.5,   # 增加梯度裁剪阈值
+
+    # 生成参数
+    max_prompt_length=512,
+    max_completion_length=256,
+
+    # 训练步数
+    # max_steps=1000,  # 训练步数
+    max_steps=100,  # 小型实验
+    logging_steps=1,  # 更频繁地记录loss
+    save_steps=50,
+
+    # 重要：GRPO特定参数:cite[4]
+    beta=0.05,  # 降低KL散度系数以减少正则化强度
+
+    # 启用vLLM加速（如果已安装）:cite[9]
+    # use_vllm=True,
+)
+
+# 初始化loss记录回调
+loss_callback = LossLoggingCallback()
+
+# 5. 初始化GRPOTrainer并开始训练
+trainer = GRPOTrainer(
+    model=model,
+    # 将tokenizer参数名改为processing_class
+    processing_class=tokenizer,
+    reward_funcs=math_reasoning_reward,
+    args=training_args,
+    train_dataset=train_dataset,
+    callbacks=[loss_callback],  # 添加回调函数
+)
+
+# 开始训练
+trainer.train()
+
+# 保存训练好的模型
+trainer.save_model("./qwen3-0.6b-grpo-gsm8k-final")
+
+# 绘制loss曲线
+plt.figure(figsize=(10, 6))
+plt.plot(loss_callback.steps, loss_callback.losses, marker='o', linestyle='-')
+plt.title('GRPO Training Loss')
+plt.xlabel('Training Steps')
+plt.ylabel('Loss')
+plt.grid(True)
+plt.savefig('grpo_training_loss.png')
+plt.show()
+
+# 如果有奖励数据，也绘制奖励曲线
+if loss_callback.rewards:
+    plt.figure(figsize=(10, 6))
+    # 计算每个step的平均奖励
+    avg_rewards = []
+    num_generations = training_args.num_generations
+    for i in range(0, len(loss_callback.rewards), num_generations):
+        avg_reward = sum(loss_callback.rewards[i:i+num_generations]) / num_generations
+        avg_rewards.append(avg_reward)
+    plt.plot(range(len(avg_rewards)), avg_rewards, marker='o', linestyle='-', color='orange')
+    plt.title('GRPO Average Reward')
+    plt.xlabel('Training Steps')
+    plt.ylabel('Average Reward')
+    plt.grid(True)
+    plt.savefig('grpo_training_reward.png')
+    plt.show()
