@@ -3,7 +3,8 @@ import datetime
 import requests
 from urllib.parse import quote
 import os
-import random
+from bs4 import BeautifulSoup
+import re
 
 class ToolLibrary:
     @staticmethod
@@ -34,7 +35,157 @@ class ToolLibrary:
     def web_search(query: str) -> str:
         """简单的网页搜索"""
         print(f"（调用网页搜索工具）")
-
+        try:
+            # 使用百度搜索获取结果
+            search_url = f"https://www.baidu.com/s?wd={quote(query)}"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            response = requests.get(search_url, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            # 解析搜索结果
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # 定义需要过滤的无用网站列表
+            filtered_domains = [
+                'hao123.com', 'baidu.com', 'baike.com', 'zhidao.baidu.com', 
+                'tieba.baidu.com', 'jingyan.baidu.com'
+            ]
+            
+            # 提取前几个搜索结果链接
+            links = []
+            for link_elem in soup.find_all('a', href=True):
+                href = link_elem['href']
+                # 获取实际链接（百度搜索结果中的链接可能需要进一步处理）
+                if 'link?url=' in href:
+                    # 这是百度的跳转链接，需要访问以获取真实链接
+                    try:
+                        real_response = requests.head(href, allow_redirects=True, timeout=5)
+                        real_url = real_response.url
+                    except:
+                        real_url = href
+                else:
+                    real_url = href
+                    
+                # 过滤出有效的外部链接
+                if real_url.startswith('http') and not any(domain in real_url for domain in filtered_domains):
+                    title = link_elem.get_text().strip()
+                    if title and len(title) > 5:  # 过滤掉标题太短的链接
+                        links.append({'url': real_url, 'title': title})
+                        if len(links) >= 5:  # 获取更多链接以确保有足够的有效链接
+                            break
+            
+            # 如果没有找到有效链接，尝试其他方法
+            if not links:
+                # 尝试查找h3标签下的链接
+                for h3_elem in soup.find_all('h3'):
+                    link_elem = h3_elem.find('a', href=True)
+                    if link_elem:
+                        href = link_elem['href']
+                        # 处理百度跳转链接
+                        if 'link?url=' in href:
+                            try:
+                                real_response = requests.head("https://www.baidu.com" + href, allow_redirects=True, timeout=5)
+                                real_url = real_response.url
+                            except:
+                                real_url = href
+                        else:
+                            real_url = href
+                            
+                        title = link_elem.get_text().strip()
+                        if (real_url.startswith('http') and 
+                            not any(domain in real_url for domain in filtered_domains) and 
+                            title and len(title) > 5):
+                            links.append({'url': real_url, 'title': title})
+                            if len(links) >= 5:
+                                break
+            
+            # 访问这些链接并获取内容摘要
+            results = []
+            for link_info in links:
+                try:
+                    # 检查链接是否在过滤列表中
+                    if any(domain in link_info['url'] for domain in filtered_domains):
+                        continue
+                        
+                    page_response = requests.get(link_info['url'], headers=headers, timeout=8)
+                    page_response.raise_for_status()
+                    
+                    page_soup = BeautifulSoup(page_response.text, 'html.parser')
+                    
+                    # 移除脚本和样式元素
+                    for script in page_soup(["script", "style"]):
+                        script.decompose()
+                    
+                    # 获取页面标题
+                    page_title = ""
+                    title_tag = page_soup.find('title')
+                    if title_tag:
+                        page_title = title_tag.get_text().strip()
+                    
+                    # 获取页面主要内容
+                    page_content = ""
+                    # 尝试多种方法获取主要内容
+                    content_candidates = [
+                        page_soup.find('article'),
+                        page_soup.find('main'),
+                        page_soup.find('div', class_='content'),
+                        page_soup.find('div', class_='post-content'),
+                        page_soup.find('div', class_='article-content'),
+                        page_soup.find('div', {'id': 'content'}),
+                        page_soup.find('div', {'class': 'post'}),
+                        page_soup.find('body')
+                    ]
+                    
+                    for candidate in content_candidates:
+                        if candidate:
+                            # 提取文本并清理
+                            text = candidate.get_text()
+                            # 移除多余的空白字符
+                            text = re.sub(r'\s+', ' ', text).strip()
+                            if len(text) > 100:  # 只有足够长的文本才算有效
+                                # 取前300个字符作为摘要
+                                page_content = text[:300] + ("..." if len(text) > 300 else "")
+                                break
+                    
+                    if (page_title and len(page_title) > 10) or (page_content and len(page_content) > 50):
+                        results.append({
+                            'title': link_info['title'] if len(link_info['title']) > 10 else page_title,
+                            'desc': page_content if page_content else "无内容摘要",
+                            'link': link_info['url']
+                        })
+                        
+                    # 如果已经获取到足够的结果，就停止
+                    if len(results) >= 3:
+                        break
+                        
+                except Exception as e:
+                    # 如果访问某个链接失败，继续尝试下一个
+                    continue
+            
+            # 格式化结果
+            if results:
+                formatted_results = []
+                for i, result in enumerate(results, 1):
+                    formatted_results.append(
+                        f"{i}. 标题: {result['title']}\n"
+                        f"   内容摘要: {result['desc']}\n"
+                        f"   链接: {result['link']}\n"
+                    )
+                return f"搜索'{query}'的结果:\n" + "\n".join(formatted_results)
+            else:
+                # 如果所有方法都失败了，至少返回搜索链接
+                return f"已在百度搜索 '{query}'，请访问以下链接查看结果：{search_url}"
+            
+        except requests.exceptions.Timeout:
+            return "搜索超时，请稍后重试"
+        except requests.exceptions.RequestException as e:
+            return f"网络请求错误: {str(e)}"
+        except Exception as e:
+            return f"搜索过程中发生错误: {str(e)}"
 
     @staticmethod
     def unit_converter(query: str) -> str:

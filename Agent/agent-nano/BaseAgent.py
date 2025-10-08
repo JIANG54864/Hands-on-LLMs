@@ -1,6 +1,7 @@
 import json
 import re
 from typing import Dict, List, Callable
+import datetime
 
 
 class BaseAgent:
@@ -27,8 +28,14 @@ class BaseAgent:
 
     def generate_prompt(self, user_input: str) -> List[Dict]:
         """生成包含记忆和当前输入的完整提示"""
+        # 获取当前时间
+        current_time = datetime.datetime.now().strftime("%Y年%m月%d日 %H:%M")
+        
+        # 在用户输入中添加当前时间信息
+        timed_user_input = f"[当前时间: {current_time}] {user_input}"
+        
         prompt = self.memory.copy()
-        prompt.append({"role": "user", "content": user_input})
+        prompt.append({"role": "user", "content": timed_user_input})
         return prompt
 
     def parse_response(self, response: str) -> Dict:

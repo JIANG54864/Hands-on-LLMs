@@ -3,6 +3,7 @@ import requests
 from typing import Dict, List, Optional
 import sys
 import os
+import datetime
 # 添加项目根目录到Python路径
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from ToolLibrary import ToolLibrary
@@ -87,7 +88,11 @@ def main():
     agent = BaseAgent(llm_api, tools, memory_size=3)
 
     # 4. 系统提示（初始化记忆）
+    # 获取当前日期和时间
+    current_time = datetime.datetime.now().strftime("%Y年%m月%d日 %H:%M")
+    
     system_prompt = (
+        f"当前时间是 {current_time}。\n"
         "你是一个智能助手，可以调用工具解决用户问题。\n"
         "你可以使用的工具包括: \n"
         "1. calculator - 计算数学表达式，如: '3+5*2'\n"
