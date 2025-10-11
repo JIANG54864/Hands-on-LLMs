@@ -105,7 +105,11 @@ class BaseAgent:
                 pass
 
             # 尝试作为字符串参数调用
-            return self.tools[tool_name](tool_input)
+            # 如果输入为空，则不传递参数（让默认参数生效）
+            if tool_input.strip() == "":
+                return self.tools[tool_name]()
+            else:
+                return self.tools[tool_name](tool_input)
         except Exception as e:
             return f"Error: 工具执行失败 - {str(e)}"
 

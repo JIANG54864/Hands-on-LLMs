@@ -27,9 +27,8 @@ class ToolLibrary:
         """获取当前时间或日期"""
         print(f"（调用时间工具）")
         now = datetime.datetime.now()
-        if "date" in query.lower() or "日期" in query.lower():
-            return f"当前日期: {now.strftime('%Y-%m-%d')}"
-        return f"当前时间: {now.strftime('%H:%M:%S')}"
+        # 无条件返回日期和时间
+        return f"当前日期和时间: {now.strftime('%Y-%m-%d %H:%M:%S')}"
 
     @staticmethod
     def web_search(query: str) -> str:
@@ -224,3 +223,71 @@ class ToolLibrary:
             return f"不支持从 {from_unit} 到 {to_unit} 的转换"
         except Exception as e:
             return f"转换失败: {str(e)}"
+
+    @staticmethod
+    def read_file(file_path: str) -> str:
+        """读取文件内容"""
+        print(f"（调用读取文件工具）")
+        try:
+            if not os.path.exists(file_path):
+                return f"错误: 文件 '{file_path}' 不存在"
+
+            if not os.path.isfile(file_path):
+                return f"错误: '{file_path}' 不是一个有效文件"
+
+            with open(file_path, 'r', encoding='utf-8') as file:
+                content = file.read()
+            return content
+        except Exception as e:
+            return f"读取文件时发生错误: {str(e)}"
+
+    @staticmethod
+    def rename_file(old_path: str, new_path: str) -> str:
+        """重命名文件"""
+        print(f"（调用重命名文件工具）")
+        try:
+            if not os.path.exists(old_path):
+                return f"错误: 原文件 '{old_path}' 不存在"
+
+            if os.path.exists(new_path):
+                return f"错误: 目标文件 '{new_path}' 已存在"
+
+            os.rename(old_path, new_path)
+            return f"成功将 '{old_path}' 重命名为 '{new_path}'"
+        except Exception as e:
+            return f"重命名文件时发生错误: {str(e)}"
+
+    @staticmethod
+    def list_files(directory: str = ".") -> str:
+        """列出目录中的文件和文件夹"""
+        print(f"（调用列出文件工具）")
+        try:
+            if not os.path.exists(directory):
+                return f"错误: 目录 '{directory}' 不存在"
+
+            if not os.path.isdir(directory):
+                return f"错误: '{directory}' 不是一个有效目录"
+
+            items = os.listdir(directory)
+            if not items:
+                return f"目录 '{directory}' 为空"
+
+            # 分离文件和文件夹
+            files = []
+            folders = []
+            for item in items:
+                item_path = os.path.join(directory, item)
+                if os.path.isfile(item_path):
+                    files.append(item)
+                else:
+                    folders.append(item)
+
+            result = f"目录 '{directory}' 中的文件和文件夹:\n"
+            if folders:
+                result += "文件夹:\n" + "\n".join([f"  {folder}/" for folder in folders]) + "\n"
+            if files:
+                result += "文件:\n" + "\n".join([f"  {file}" for file in files])
+
+            return result
+        except Exception as e:
+            return f"列出文件时发生错误: {str(e)}"

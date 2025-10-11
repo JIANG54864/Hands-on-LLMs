@@ -17,7 +17,7 @@ load_dotenv()
 
 
 class DeepSeekAPI:
-    def __init__(self, model: str = "deepseek-r1", api_key: Optional[str] = None):
+    def __init__(self, model: str = "deepseek-chat", api_key: Optional[str] = None):
         self.api_url = "https://api.deepseek.com/v1/chat/completions"
         self.model = model
         self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
@@ -81,7 +81,10 @@ def main():
         "calculator": ToolLibrary.calculator,
         "time": ToolLibrary.time,
         "web_search": ToolLibrary.web_search,
-        "unit_converter": ToolLibrary.unit_converter
+        "unit_converter": ToolLibrary.unit_converter,
+        "read_file": ToolLibrary.read_file,
+        "rename_file": ToolLibrary.rename_file,
+        "list_files": ToolLibrary.list_files
     }
 
     # 3. 创建智能体实例
@@ -99,6 +102,9 @@ def main():
         "2. time - 获取当前时间或日期\n"
         "3. web_search - 搜索网络信息\n"
         "4. unit_converter - 单位转换，格式: '10 km to mi'\n"
+        "5. list_files - 列出目录中的文件和文件夹\n"
+        "6. read_file - 读取文件内容\n"
+        "7. rename_file - 重命名文件\n"
         "\n"
         "请严格按照以下格式进行响应:\n"
         "Thoughts: 你的思考过程\n"
