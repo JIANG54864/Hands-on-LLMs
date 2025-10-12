@@ -48,6 +48,36 @@ class DeepSeekAPI:
         except Exception as e:
             return f"API调用错误: {str(e)}"
 
+
+class QwenAPI:
+    def __init__(self, model: str = "qwen3-max", api_key: Optional[str] = None):
+        self.api_key = api_key or os.getenv("QWEN_API_KEY")
+        self.model = model
+
+        if not self.api_key:
+            raise ValueError("Qwen API key not provided")
+
+    def __call__(self, messages: List[Dict]) -> str:
+        """调用Qwen API"""
+        try:
+            from openai import OpenAI
+            client = OpenAI(
+                api_key=self.api_key,
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            )
+            
+            completion = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                extra_body={"enable_thinking": False}
+            )
+            return completion.choices[0].message.content
+        except ImportError:
+            return "API调用错误: 未安装openai库，请运行 'pip install openai'"
+        except Exception as e:
+            return f"API调用错误: {str(e)}"
+
+
 class OllamaAPI:
     def __init__(self, model: str = "myqwen"):
         self.api_url = "http://localhost:11434/api/chat"
@@ -74,7 +104,8 @@ class OllamaAPI:
 def main():
     # 1. 初始化LLM API
     # llm_api = OllamaAPI(model="myqwen")
-    llm_api = DeepSeekAPI(model="deepseek-chat")
+    # llm_api = DeepSeekAPI(model="deepseek-chat")
+    llm_api = QwenAPI(model="qwen3-max")
 
     # 2. 创建工具库
     tools = {
@@ -121,7 +152,31 @@ def main():
         "Action: reply\n"
         "Input: 你好！有什么可以帮助你的吗？\n"
         "\n"
-        "重要提醒：你必须严格按照上述格式进行响应，不要添加任何额外的内容。"
+        "示例3 - 工具执行后返回结果:\n"
+        "（系统输入）工具调用结果: 目录 '.' 中的文件和文件夹:文件夹:  文件夹: __pycache__/ 文件: main.py, utils.py\n"
+        "Thoughts: 我已经得到了文件列表，现在可以告诉用户有哪些文件\n"
+        "Action: reply\n"
+        "Input: 当前文件夹中包含以下内容：文件夹: __pycache__/ 文件: main.py, utils.py\n"
+        "\n"
+        "示例4 - 计算器工具使用后:\n"
+        "（系统输入）工具调用结果: 计算结果: 3+5*2 = 13\n"
+        "Thoughts: 我已经得到了计算结果，现在可以告诉用户\n"
+        "Action: reply\n"
+        "Input: 计算结果是：3+5*2 = 13\n"
+        "\n"
+        "示例5 - 单位转换工具使用后:\n"
+        "（系统输入）工具调用结果: 10 km = 6.21 mi\n"
+        "Thoughts: 我已经得到了单位转换结果，现在可以告诉用户\n"
+        "Action: reply\n"
+        "Input: 单位转换结果是：10 km = 6.21 mi\n"
+        "\n"
+        "示例6 - 网络搜索工具使用后:\n"
+        "（系统输入）工具调用结果: 搜索'最新科技新闻'的结果: 1. 标题: 人工智能新突破... 内容摘要: 近日...\n"
+        "Thoughts: 我已经得到了搜索结果，现在可以告诉用户\n"
+        "Action: reply\n"
+        "Input: 这是我为您找到的关于最新科技新闻的信息：1. 标题: 人工智能新突破... 内容摘要: 近日...\n"
+        "\n"
+        "重要提醒：你必须严格按照上述格式进行响应，不要添加任何额外的内容。在回复用户时，必须包含工具返回的具体内容，不能遗漏关键信息。"
     )
     agent.add_to_memory("system", system_prompt)
 

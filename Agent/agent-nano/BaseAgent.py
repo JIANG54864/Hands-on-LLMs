@@ -5,7 +5,7 @@ import datetime
 
 
 class BaseAgent:
-    def __init__(self, llm_api: Callable, tools: Dict[str, Callable], memory_size: int = 5):
+    def __init__(self, llm_api: Callable, tools: Dict[str, Callable], memory_size: int = 10):
         """
         基础智能体类
 
@@ -136,6 +136,10 @@ class BaseAgent:
                 new_prompt = prompt.copy()
                 new_prompt.append({"role": "assistant", "content": llm_response})
                 new_prompt.append({"role": "user", "content": f"工具调用结果: {tool_result}"})
+                    
+                # 输出更详细的调试信息
+                print(f"[DEBUG] 上一步工具调用完成后Agent收到的新输入: {new_prompt[-1]['content']}")
+                print(f"[DEBUG] 完整的新提示: {new_prompt}")
 
                 # 递归处理可能的进一步工具调用
                 return self.process_tool_calls(new_prompt)

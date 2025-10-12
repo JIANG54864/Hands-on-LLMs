@@ -282,11 +282,11 @@ class ToolLibrary:
                 else:
                     folders.append(item)
 
-            result = f"目录 '{directory}' 中的文件和文件夹:\n"
+            result = f"目录 '{directory}' 中的文件和文件夹:"
             if folders:
-                result += "文件夹:\n" + "\n".join([f"  {folder}/" for folder in folders]) + "\n"
+                result += "文件夹:" + "".join([f"  {folder}/" for folder in folders])
             if files:
-                result += "文件:\n" + "\n".join([f"  {file}" for file in files])
+                result += "文件:" + "".join([f"  {file}" for file in files])
 
             return result
         except Exception as e:
