@@ -12,7 +12,7 @@ class MHA(nn.Module):
         self.v=nn.Linear(hidden_size,hidden_size)
         self.o=nn.Linear(hidden_size,hidden_size)
 
-    def forward(self,x,mask=None):
+    def forward(self,x,mask=None): # x: [batch_size, seq_len, hidden_size]
         batch_size=x.size()[0]
         query=self.q(x)
         key=self.k(x)
@@ -35,4 +35,4 @@ class MHA(nn.Module):
 
     def split_head(self,x):
         batch_size=x.size()[0]
-        return x.view(batch_size,-1,self.num_heads,self.head_dim).transpose(1,2)
+        return x.view(batch_size,-1,self.num_heads,self.head_dim).transpose(1,2) # [batch_size, seq_len, num_heads, head_dim]
