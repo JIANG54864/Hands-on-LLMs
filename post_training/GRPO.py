@@ -35,7 +35,7 @@ class LossLoggingCallback(TrainerCallback):
                 print(f"Step {state.global_step}: Sample responses = {logs['responses'][:2]}...")
 
 # 1. 加载模型和分词器
-model_name = "Qwen/Qwen3-0.6B"  # 请根据实际模型名称调整
+model_name = "Qwen/Qwen2.5-0.5B-Instruct"  # 改为Qwen2.5-0.5B模型
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, cache_dir="../model_cache")
 model = AutoModelForCausalLM.from_pretrained(model_name, trust_remote_code=True,
                                                             cache_dir="../model_cache")
@@ -52,9 +52,9 @@ train_dataset = dataset["train"]
 
 # 定义一个函数来格式化数据，适配模型的聊天模板
 def format_dataset(example):
-    # 根据Qwen3的聊天模板格式化数据:cite[8]
+    # 根据Qwen2.5的聊天模板格式化数据:cite[8]
     # 例如: [{"role": "user", "content": "问题..."}]
-    # 具体格式请参考Qwen3的官方文档
+    # 具体格式请参考Qwen2.5的官方文档
     formatted_prompt = tokenizer.apply_chat_template(
         [{"role": "user", "content": example["question"]}],
         tokenize=False,
@@ -66,6 +66,41 @@ def format_dataset(example):
 # 应用格式化函数
 train_dataset = train_dataset.map(format_dataset)
 
+# 添加一个函数来为GRPO训练准备数据
+def prepare_grpo_dataset(example):
+    # 保留原始格式化后的prompt和answer
+    return {"prompt": example["prompt"], "answer": example["answer"]}
+
+
+# 应用GRPO数据准备函数
+train_dataset = train_dataset.map(prepare_grpo_dataset)
+
+def extract_answer(output: str) -> str:
+    """
+    从模型输出中提取最终答案（鲁棒版）
+    支持格式：
+      - ... The answer is 42.
+      - ... #### 42
+      - ... 答案是 42。
+      - ... 42
+    """
+    # 方法1: 匹配 "#### X"（GSM8K 官方格式）
+    match = re.search(r"####\s*(\d+)", output)
+    if match:
+        return match.group(1).strip()
+
+    # 方法2: 匹配 "The answer is X"（含中英文）
+    match = re.search(r"(?:answer is|答案是|最终答案|is)\s*[:：]?\s*(\d+)", output, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+
+    # 方法3: 提取最后一个正整数（最通用）
+    numbers = re.findall(r"\d+", output)
+    if numbers:
+        return numbers[-1]
+
+    # 无法解析，返回空
+    return ""
 
 # 3. 定义奖励函数
 # 奖励函数是GRPO的核心，用于评估生成内容的质量:cite[9]
@@ -76,52 +111,30 @@ def math_reasoning_reward(completions, prompts=None, **kwargs):
     """
     rewards = []
     
-    # 获取标准答案（如果提供了prompts）
+    # 从kwargs中获取标准答案
     answers = None
-    if prompts and "answer" in prompts[0]:
-        answers = [prompt["answer"] for prompt in prompts]
+    if 'answer' in kwargs:
+        answers = kwargs['answer']
     
     for i, completion in enumerate(completions):
         reward = 0.0
-
-        # 奖励1: 鼓励生成包含推理步骤的文本
-        # 可以根据实际需求调整判断逻辑
-        if "think" in completion.lower() or "step" in completion.lower():
-            reward += 0.3
-
-        # 奖励2: 检查答案格式（GSM8K答案通常以####数字结尾）
-        if "####" in completion:
-            reward += 0.7
-            
-        # 奖励3: 鼓励更长的生成文本
-        reward += min(len(completion) / 1000, 0.5)  # 长度奖励，最多0.5
-        
-        # 奖励4: 检查是否包含数字（数学问题应该有数字）
-        if re.search(r'\d', completion):
-            reward += 0.2
-            
         # 更精确的奖励：尝试提取答案并比较
         if answers is not None:
             # 提取模型生成的答案
-            model_answer_match = re.search(r'####\s*(.*)', completion)
+            model_answer = extract_answer(completion)
             # 提取标准答案
-            ground_truth_match = re.search(r'####\s*(.*)', answers[i])
-            
-            if model_answer_match and ground_truth_match:
+            ground_truth = extract_answer(str(answers[i]))
+
+            if model_answer and ground_truth:
                 try:
-                    model_answer = float(model_answer_match.group(1).strip())
-                    ground_truth = float(ground_truth_match.group(1).strip())
-                    
+                    model_answer = float(model_answer)
+                    ground_truth = float(ground_truth)
                     # 如果答案正确，给予高奖励
                     if abs(model_answer - ground_truth) < 1e-6:
-                        reward += 2.0
-                    # 如果答案接近，给予部分奖励
-                    elif abs(model_answer - ground_truth) < 0.1 * abs(ground_truth):
                         reward += 1.0
                 except ValueError:
                     # 如果无法转换为数字，给予较小的奖励
-                    reward += 0.1
-
+                    pass
         rewards.append(reward)
 
     return rewards
@@ -129,7 +142,7 @@ def math_reasoning_reward(completions, prompts=None, **kwargs):
 
 # 4. 配置训练参数
 training_args = GRPOConfig(
-    output_dir="./qwen3-0.6b-grpo-gsm8k",
+    output_dir="./qwen2.5-0.5b-grpo-gsm8k",
     # 批次大小相关参数，适用于24GB显存的RTX 3090
     per_device_train_batch_size=8,  # 增加批次大小以更好地利用显存
     gradient_accumulation_steps=1,  # 减少梯度累积步数
@@ -174,7 +187,7 @@ trainer = GRPOTrainer(
 trainer.train()
 
 # 保存训练好的模型
-trainer.save_model("./qwen3-0.6b-grpo-gsm8k-final")
+trainer.save_model("./qwen2.5-0.5b-grpo-gsm8k-final")
 
 # 绘制loss曲线
 plt.figure(figsize=(10, 6))
